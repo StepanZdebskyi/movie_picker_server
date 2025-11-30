@@ -54,7 +54,7 @@ const users = [
 ];
 
 // LOGIN ROUTE
-app.post('/login', (req, res) => {
+app.post('/api/login', (req, res) => {
   const { email, password } = req.body;
 
   const user = users.find((u) => u.email === email);
@@ -78,7 +78,7 @@ app.post('/login', (req, res) => {
   }
 });
 
-app.post('/watchlist', (req, res) => {
+app.post('/api/watchlist', (req, res) => {
   const { email, watchlist } = req.body;
 
   const user = users.find((u) => u.email === email);
@@ -101,7 +101,7 @@ app.post('/watchlist', (req, res) => {
   }
 });
 
-app.get('/watchlist/:email', (req, res) => {
+app.get('/api/watchlist/:email', (req, res) => {
   const { email } = req.params;
 
   const user = users.find((u) => u.email === email);
