@@ -1,125 +1,121 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const { getUser, getWatchlist, updateWatchlist, seedDatabase } = require('s3Service');
 
 const app = express();
 const PORT = 5000; // The server will run on port 5000
 
-const client = require('prom-client');
-
-// 1. Вмикаємо збір стандартних метрик (CPU, RAM, Event Loop)
-const collectDefaultMetrics = client.collectDefaultMetrics;
-collectDefaultMetrics({ timeout: 5000 }); // Оновлювати кожні 5 секунд
-
-// 2. Створюємо кастомну метрику (лічильник запитів) - для прикладу
-const httpRequestDurationMicroseconds = new client.Histogram({
-  name: 'http_request_duration_seconds',
-  help: 'Duration of HTTP requests in seconds',
-  labelNames: ['method', 'route', 'code'],
-  buckets: [0.1, 0.3, 0.5, 0.7, 1, 3, 5, 7, 10],
-});
-
-// Middleware для вимірювання часу кожного запиту (опціонально, але круто для звіту)
-app.use((req, res, next) => {
-  const end = httpRequestDurationMicroseconds.startTimer();
-  res.on('finish', () => {
-    end({ method: req.method, route: req.route ? req.route.path : req.path, code: res.statusCode });
-  });
-  next();
-});
-
-// 3. Створюємо ендпоінт /metrics, який буде читати Prometheus
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', client.register.contentType);
-  res.end(await client.register.metrics());
-});
-
 app.use(cors()); // Allow requests from React
 app.use(bodyParser.json());
 
-// MOCK USER DATABASE
-const users = [
-  {
-    email: 'admin@movies.com',
-    password: 'password123',
-    name: 'Admin User',
-    watchlist: [],
-  },
-  {
-    email: 'user@test.com',
-    password: '1234',
-    name: 'Test User',
-    watchlist: [],
-  },
-];
+// --- HEALTH CHECKS ---
+
+// Health Check endpoint for AWS ALB
+app.get('/', (req, res) => {
+  res.status(200).send('Healthy');
+});
+
+// Health Check endpoint for AWS ALB (alternative path)
+app.get('/api/', (req, res) => {
+  res.status(200).send('Healthy');
+});
+
+// Target Group specific health check
+app.get('/health', (req, res) => {
+  res.status(200).send('Healthy');
+});
+
+// --- API ROUTES (S3 INTEGRATION) ---
 
 // LOGIN ROUTE
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
 
-  const user = users.find((u) => u.email === email);
+  try {
+    const user = await getUser(email);
 
-  if (user && user.password === password) {
-    res.status(200).json({
-      success: true,
-      message: 'Login successful',
-      user: {
-        name: user.name,
-        email: user.email,
-        watchlist: user.watchlist,
-      },
-    });
-  } else {
-    // Failure
-    res.status(401).json({
-      success: false,
-      message: 'Invalid email or password',
-    });
+    if (user && user.password === password) {
+      res.status(200).json({
+        success: true,
+        message: 'Login successful',
+        user: {
+          name: user.name,
+          email: user.email,
+          watchlist: user.watchlist,
+        },
+      });
+    } else {
+      // Failure
+      res.status(401).json({
+        success: false,
+        message: 'Invalid email or password',
+      });
+    }
+  } catch (error) {
+    console.error('Login Error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-app.post('/api/watchlist', (req, res) => {
+// UPDATE WATCHLIST
+app.post('/api/watchlist', async (req, res) => {
   const { email, watchlist } = req.body;
 
-  const user = users.find((u) => u.email === email);
+  try {
+    const updatedList = await updateWatchlist(email, watchlist);
 
-  if (user) {
-    user.watchlist = watchlist;
-
-    console.log(`Updated watchlist for ${user.name}. Items: ${user.watchlist.length}`);
-
-    res.status(200).json({
-      success: true,
-      message: 'Watchlist updated successfully',
-      watchlist: user.watchlist,
-    });
-  } else {
-    res.status(404).json({
-      success: false,
-      message: 'User not found',
-    });
+    if (updatedList) {
+      console.log(`Updated watchlist for ${email}. Items: ${updatedList.length}`);
+      res.status(200).json({
+        success: true,
+        message: 'Watchlist updated successfully',
+        watchlist: updatedList,
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+  } catch (error) {
+    console.error('Watchlist Update Error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-app.get('/api/watchlist/:email', (req, res) => {
+// GET WATCHLIST
+app.get('/api/watchlist/:email', async (req, res) => {
   const { email } = req.params;
 
-  const user = users.find((u) => u.email === email);
+  try {
+    const watchlist = await getWatchlist(email);
 
-  if (user) {
-    res.status(200).json({
-      success: true,
-      watchlist: user.watchlist,
-    });
-  } else {
-    res.status(404).json({
-      success: false,
-      message: 'User not found',
-    });
+    if (watchlist !== null) {
+      res.status(200).json({
+        success: true,
+        watchlist: watchlist,
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+  } catch (error) {
+    console.error('Watchlist Fetch Error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
 // Start Server
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Server running on http://localhost:${PORT}`);
+
+  // Seed the S3 bucket with mock users (Admin/Test) on startup
+  try {
+    await seedDatabase();
+  } catch (err) {
+    console.error('Failed to seed database:', err);
+  }
 });
